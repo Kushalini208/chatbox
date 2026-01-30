@@ -1,24 +1,30 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>StayGenie – Your Smart Hotel Booking Assistant</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <meta charset="UTF-8">
+    <title>Hotel Booking Chatbot 🏨</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
 
 <div class="chat-container">
     <div class="chat-header">
-        🌟 StayGenie – Your Smart Hotel Booking Assistant
+        🏨 Hotel Booking Assistant
     </div>
 
-    <div id="chatMessages" class="chat-messages"></div>
+    <div id="chat-box" class="chat-box"></div>
 
     <div class="chat-input">
-        <input type="text" id="messageInput" placeholder="Type your message...">
-        <button onclick="sendMessage()">Send</button>
+        <input
+            type="text"
+            id="user-input"
+            placeholder="Type your message here..."
+            autocomplete="off"
+        />
+        <button id="send-btn">Send</button>
     </div>
 </div>
 
-<script src="/static/script.js"></script>
+<script src="{{ url_for('static', filename='script.js') }}"></script>
 </body>
 </html>
