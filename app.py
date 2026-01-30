@@ -1,141 +1,196 @@
 from flask import Flask, render_template, request, jsonify
-from datetime import datetime
-import random
+import psycopg2
+import os
+from datetime import datetime, date
+import uuid
+
 app = Flask(__name__)
-EXTRA_PERSON_CHARGE = 750
-ROOMS = {
-    "classic": {
-        "name": "Classic Room",
-        "price": 2500,
-        "amenities": ["🛏 Double Bed", "🌀 Fan", "📺 TV", "🚿 Attached Bathroom"]
-    },
-    "premier": {
-        "name": "Premier Room",
-        "price": 4500,
-        "amenities": ["🛏 Queen Bed", "❄ AC", "📶 Free WiFi", "📺 Smart TV", "🧴 Toiletries"]
-    },
-    "suite": {
-        "name": "Suite Room",
-        "price": 7500,
-        "amenities": ["🛏 King Bed", "❄ AC", "📶 Free WiFi", "🍹 Mini Bar", "🌇 Balcony", "🛎 24/7 Service"]
-    }
+
+#DATABASE CONNECTION
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise Exception("DATABASE_URL not set")
+
+conn = psycopg2.connect(DATABASE_URL)
+cursor = conn.cursor()
+
+#CREATE TABLE
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS bookings (
+    id SERIAL PRIMARY KEY,
+    booking_id TEXT,
+    name TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    checkin DATE,
+    checkout DATE,
+    nights INT,
+    adults INT,
+    children INT,
+    room TEXT,
+    total INT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+conn.commit()
+
+#CONSTANTS
+ROOM_PRICES = {
+    "classic": 2500,
+    "premier": 4500,
+    "suite": 7500
 }
-user = {"step": "name"}
+
+ROOM_AMENITIES = {
+    "classic": ["🛏 Double Bed", "🌀 Fan", "📺 TV", "🚿 Attached Bathroom"],
+    "premier": ["🛏 Queen Bed", "❄ AC", "📶 Free Wi-Fi", "📺 Smart TV", "🧴 Toiletries"],
+    "suite": ["🛏 King Bed", "❄ AC", "📶 Free Wi-Fi", "🍸 Mini Bar", "🌅 Balcony", "🛎 24/7 Room Service"]
+}
+
+EXTRA_PERSON_CHARGE = 750
+
+#SESSION DATA
+user_state = {}
+
+#ROUTES
 @app.route("/")
 def index():
     return render_template("index.html")
+
 @app.route("/chat", methods=["POST"])
 def chat():
-    msg = request.json["message"].strip()
-    year = datetime.now().year
-    # NAME
-    if user["step"] == "name":
-        if not msg.replace(" ", "").isalpha():
-            return jsonify({"reply": "❌ Invalid name. Use only alphabets."})
-        user["name"] = msg
-        user["step"] = "phone"
-        return jsonify({"reply": "📞 Enter your 10-digit phone number:"})
-    # PHONE
-    if user["step"] == "phone":
+    msg = request.json.get("message", "").strip()
+    state = user_state.get("stage", "name")
+
+    #NAME
+    if state == "name":
+        if not msg.isalpha():
+            return reply("❌ Invalid name. Use alphabets only.")
+        user_state["name"] = msg
+        user_state["stage"] = "phone"
+        return reply("📞 Enter your 10-digit phone number:")
+
+    #PHONE
+    if state == "phone":
         if not msg.isdigit() or len(msg) != 10:
-            return jsonify({"reply": "❌ Phone number must be exactly 10 digits."})
-        user["phone"] = msg
-        user["step"] = "checkin"
-        return jsonify({"reply": "📅 Select Check-in date (YYYY-MM-DD):", "calendar": True})
-    # CHECK-IN
-    if user["step"] == "checkin":
+            return reply("❌ Phone number must be exactly 10 digits.")
+        user_state["phone"] = msg
+        user_state["stage"] = "checkin"
+        return reply("📅 Select your Check-in date (YYYY-MM-DD):")
+
+    #CHECKIN
+    if state == "checkin":
         try:
-            d = datetime.strptime(msg, "%Y-%m-%d")
-            if d.year != year:
-                return jsonify({"reply": "❌ Only current year dates allowed."})
-            user["checkin"] = d
-            user["step"] = "checkout"
-            return jsonify({"reply": "📅 Select Check-out date:", "calendar": True})
+            checkin = datetime.strptime(msg, "%Y-%m-%d").date()
+            if checkin.year != date.today().year:
+                raise ValueError
+            user_state["checkin"] = checkin
+            user_state["stage"] = "checkout"
+            return reply("📅 Select your Check-out date (YYYY-MM-DD):")
         except:
-            return jsonify({"reply": "❌ Invalid date format."})
-    # CHECK-OUT
-    if user["step"] == "checkout":
+            return reply("❌ Invalid date. Use current year only (YYYY-MM-DD).")
+
+    #CHECKOUT
+    if state == "checkout":
         try:
-            d = datetime.strptime(msg, "%Y-%m-%d")
-            if d <= user["checkin"]:
-                return jsonify({"reply": "❌ Check-out must be after check-in."})
-            user["checkout"] = d
-            user["step"] = "confirm_dates"
-            nights = (d - user["checkin"]).days
-            return jsonify({
-                "reply": f"🗓 {nights} nights selected. Change date or Confirm?",
-                "buttons": ["Change Date", "Confirm Date"]
-            })
+            checkout = datetime.strptime(msg, "%Y-%m-%d").date()
+            if checkout <= user_state["checkin"]:
+                raise ValueError
+            user_state["checkout"] = checkout
+            user_state["nights"] = (checkout - user_state["checkin"]).days
+            user_state["stage"] = "adults"
+            return reply("👨‍👩‍👧 Enter number of adults (minimum 1):")
         except:
-            return jsonify({"reply": "❌ Invalid date."})
-    # DATE CONFIRM
-    if user["step"] == "confirm_dates":
-        if msg.lower() == "change date":
-            user["step"] = "checkin"
-            return jsonify({"reply": "📅 Re-enter Check-in date:", "calendar": True})
-        user["step"] = "adults"
-        return jsonify({"reply": "👨 Adults (minimum 1):"})
-    # ADULTS
-    if user["step"] == "adults":
+            return reply("❌ Checkout must be after check-in.")
+    #ADULTS
+    if state == "adults":
         if not msg.isdigit() or int(msg) < 1:
-            return jsonify({"reply": "❌ At least 1 adult required."})
-        user["adults"] = int(msg)
-        user["step"] = "children"
-        return jsonify({"reply": "🧒 Children (0 allowed):"})
-    # CHILDREN
-    if user["step"] == "children":
+            return reply("❌ Minimum 1 adult required.")
+        user_state["adults"] = int(msg)
+        user_state["stage"] = "children"
+        return reply("🧒 Enter number of children (0 allowed):")
+    #CHILDREN
+    if state == "children":
         if not msg.isdigit() or int(msg) < 0:
-            return jsonify({"reply": "❌ Invalid children count."})
-        user["children"] = int(msg)
-        user["step"] = "room"
-        return jsonify({
-            "reply": "🏨 Choose a room:",
-            "rooms": ROOMS
-        })
-    # ROOM SELECT
-    if user["step"] == "room":
-        key = msg.lower()
-        if key not in ROOMS:
-            return jsonify({"reply": "❌ Invalid room choice."})
-        user["room"] = ROOMS[key]
-        nights = (user["checkout"] - user["checkin"]).days
-        extra = max(0, user["adults"] - 2)
-        total = (user["room"]["price"] * nights) + (extra * EXTRA_PERSON_CHARGE * nights)
-        user["total"] = total
-        user["step"] = "confirm_room"
-        return jsonify({
-            "reply": f"""
-🏨 {user['room']['name']}
-💰 ₹{user['room']['price']} / night
-🛏 Amenities: {', '.join(user['room']['amenities'])}
-➕ Extra Persons: {extra}
-💵 Total: ₹{total}
-""",
-            "buttons": ["Change Room", "Confirm Room"]
-        })
-    # FINAL CONFIRM
-    if user["step"] == "confirm_room":
-        if msg.lower() == "change room":
-            user["step"] = "room"
-            return jsonify({"reply": "🏨 Choose a room:", "rooms": ROOMS})
+            return reply("❌ Invalid number.")
+        user_state["children"] = int(msg)
+        user_state["stage"] = "room"
+        return reply(
+            "🏨 Available Rooms:\n"
+            "🏠 Classic Room – ₹2500/night\n"
+            "🏢 Premier Room – ₹4500/night\n"
+            "🏰 Suite Room – ₹7500/night\n\n"
+            "Type: classic / premier / suite"
+        )
+    #ROOM
+    if state == "room":
+        room = msg.lower()
+        if room not in ROOM_PRICES:
+            return reply("❌ Choose classic, premier, or suite.")
+        user_state["room"] = room
+        nights = user_state["nights"]
+        base = ROOM_PRICES[room] * nights
+        extra_people = max(0, user_state["adults"] - 2)
+        extra_cost = extra_people * EXTRA_PERSON_CHARGE * nights
+        total = base + extra_cost
+        user_state["total"] = total
+        user_state["stage"] = "confirm"
+        amenities = ", ".join(ROOM_AMENITIES[room])
+        return reply(
+            f"📋 Booking Summary\n\n"
+            f"Room: {room.upper()}\n"
+            f"Amenities: {amenities}\n"
+            f"Nights: {nights}\n"
+            f"Extra Persons: {extra_people}\n"
+            f"💰 Total Amount: ₹{total}\n\n"
+            f"Type CONFIRM to proceed or CHANGE to select room again."
+        )
 
-        booking_id = "SG" + str(random.randint(10000, 99999))
-        time = user["checkin"].strftime("%d %b %Y, 12:00 PM")
+    #CONFIRM
+    if state == "confirm":
+        if msg.lower() == "change":
+            user_state["stage"] = "room"
+            return reply("🔁 Select room again: classic / premier / suite")
 
-        user.clear()
-        user["step"] = "name"
+        if msg.lower() == "confirm":
+            booking_id = str(uuid.uuid4())[:8]
 
-        return jsonify({
-            "reply": f"""
-🎉 BOOKING CONFIRMED 🎉
+            cursor.execute("""
+                INSERT INTO bookings
+                (booking_id, name, phone, checkin, checkout, nights, adults, children, room, total)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """, (
+                booking_id,
+                user_state["name"],
+                user_state["phone"],
+                user_state["checkin"],
+                user_state["checkout"],
+                user_state["nights"],
+                user_state["adults"],
+                user_state["children"],
+                user_state["room"],
+                user_state["total"]
+            ))
+            conn.commit()
+            user_state.clear()
 
-🆔 Booking ID: {booking_id}
-📅 Check-in: {time}
-💳 Payment: https://pay.example.com/{booking_id}
+            return reply(
+                f"✅ Booking Confirmed!\n\n"
+                f"🆔 Booking ID: {booking_id}\n"
+                f"📅 Check-in: {date.today()} at 12:00 PM\n"
+                f"💳 Payment link will be shared\n"
+                f"🪪 Bring ID proof at check-in\n\n"
+                f"Thank you for choosing us ❤️"
+            )
 
-🪪 Please bring a valid ID proof.
-🙏 Thank you for choosing us!
-"""
-        }) 
+        return reply("❌ Type CONFIRM or CHANGE")
+
+    return reply("❌ Something went wrong. Refresh and try again.")
+
+#HELPER
+def reply(text):
+    return jsonify({"reply": text})
+
+#RUN
 if __name__ == "__main__":
     app.run(debug=True)
